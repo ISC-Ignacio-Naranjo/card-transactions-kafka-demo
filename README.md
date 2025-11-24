@@ -322,6 +322,77 @@ Example response:
     - Consumer uses `JacksonJsonDeserializer<TransactionCreatedEvent>` with `ignoreTypeHeaders()` to avoid tight coupling to the producer’s Java class name.
 
 ---
+## Collaboration workflow
+
+This repository uses two main branches:
+
+- **`dev`** – default branch, used for day-to-day development.
+- **`main`** – protected, “stable” branch, used for reviewed and approved changes.
+
+### Branches
+
+- All contributors should branch **from `dev`**, never from `main`.
+- Typical naming conventions for feature branches:
+  - `feature/<short-description>`
+  - `bugfix/<short-description>`
+  - `refactor/<short-description>`
+
+### For contributors (non-admins)
+
+You **must not push directly to `dev` or `main`**.
+
+Instead, follow this workflow:
+
+1. Update your local `dev`:
+
+   ```bash
+   git checkout dev
+   git pull origin dev
+   ```
+
+2. Create a feature branch:
+
+   ```bash
+   git checkout -b feature/<short-description>
+   ```
+
+3. Implement your changes, then commit and push:
+
+   ```bash
+   git add .
+   git commit -m "Describe the change"
+   git push origin feature/<short-description>
+   ```
+
+4. Open a **Pull Request** on GitHub:
+  - **base**: `dev`
+  - **compare**: `feature/<short-description>`
+
+5. Wait for review and approval. Once approved, the PR will be merged into `dev`.
+
+All changes from contributors must go through a PR into `dev`.
+
+### For the repository owner
+
+- The owner can either:
+  - Work directly on `dev` and push changes, or
+  - Follow the same feature-branch + PR workflow for better history.
+
+### Promoting changes from `dev` to `main`
+
+When the `dev` branch is in a stable state:
+
+1. Open a Pull Request with:
+  - **base**: `main`
+  - **compare**: `dev`
+2. Review and approve the changes.
+3. Merge the PR into `main`.
+
+This keeps:
+
+- `dev` as the active integration branch.
+- `main` as a clean, stable branch suitable for demos, deployments, or tagging releases.
+
 
 ## Possible next steps
 
@@ -336,4 +407,5 @@ Some ideas for improving/expanding this demo:
 ---
 
 ## License
+
 
