@@ -96,7 +96,7 @@ card-transactions-kafka-demo/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-user>/card-transactions-kafka-demo.git
+git clone https://github.com/ISC-Ignacio-Naranjo/card-transactions-kafka-demo.git
 cd card-transactions-kafka-demo
 ```
 
@@ -291,7 +291,7 @@ curl "http://localhost:8081/api/v1/fraud/decisions"
 **Endpoint:** `GET /api/v1/fraud/decisions/transaction/{transactionId}`
 
 Example (using `12` as transaction id):
-
+  
 ```bash
 curl "http://localhost:8081/api/v1/fraud/decisions/transaction/12"
 ```
