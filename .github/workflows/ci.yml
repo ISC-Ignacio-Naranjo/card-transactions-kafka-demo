@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Build & test transactions-service
+        working-directory: ./transactions-service
+        run: mvn -B clean test
+
+      - name: Build & test fraud-service
+        working-directory: ./fraud-service
+        run: mvn -B clean test
+
