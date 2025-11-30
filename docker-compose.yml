@@ -1,0 +1,75 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: transactions-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: transactions
+    ports:
+      - "5433:5432" # host:container
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d transactions"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  transactions-service:
+    build:
+      context: ./transactions-service
+      dockerfile: Dockerfile
+    container_name: transactions-service
+    depends_on:
+      - postgres
+      - kafka
+    environment:
+      # Override de propiedades Spring Boot
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/transactions
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Si tienes server.port en application.yml no hace falta,
+      # pero por si acaso:
+      SERVER_PORT: 8080
+    ports:
+      - "8080:8080"
+
+  fraud-service:
+    build:
+      context: ./fraud-service
+      dockerfile: Dockerfile
+    container_name: fraud-service
+    depends_on:
+      - kafka
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SERVER_PORT: 8081
+    ports:
+      - "8081:8081"
