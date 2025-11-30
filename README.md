@@ -229,6 +229,10 @@ Typical collaboration flow:
    Later, `dev` is merged into `main` via another PR.
 
 ---
+## 📚 Documentation
+
+- [Kafka & Docker Cheat Sheet](docs/kafka-docker-cheatsheet.md)
+
 
 ## 🧹 Future Improvements
 
