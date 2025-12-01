@@ -47,13 +47,20 @@ Infrastructure (defined in `docker-compose.yml`):
 ## 🚀 Running the System with Docker Compose
 
 ### Prerequisites
+## How to Run the System
 
-- Docker / Docker Desktop
-- (Optional) JDK 21 and Maven 3.9+ for local builds without Docker
+This project can be run in two main ways:
 
-### Steps
+1. Full Docker Compose (all 5 services as containers).
+2. Hybrid dev mode (infrastructure in Docker, microservices running locally with the `dev` profile).
 
-From the repo root:
+---
+
+### Option 1 – Full Docker Compose (5 containers)
+
+In this mode everything runs in Docker: database, Kafka and both microservices.
+
+From the project root:
 
 ```bash
 cd /path/to/card-transactions-kafka-demo
@@ -62,11 +69,11 @@ docker compose up --build
 
 This will start:
 
-- `transactions-postgres` (PostgreSQL)
-- `zookeeper`
-- `kafka`
-- `transactions-service` (port `8080`)
-- `fraud-service` (port `8081`)
+- transactions-postgres (PostgreSQL)
+- zookeeper
+- kafka
+- transactions-service (port 8080)
+- fraud-service (port 8081)
 
 Check container status:
 
@@ -74,9 +81,127 @@ Check container status:
 docker compose ps
 ```
 
-Once everything is in `running` state, you can exercise the end-to-end flow.
+Default exposed ports (host -> container):
+
+- localhost:5433  -> PostgreSQL (5432 inside the container)
+- localhost:9092  -> Kafka
+- localhost:8080  -> transactions-service (container port 8080)
+- localhost:8081  -> fraud-service (container port 8080)
+
+#### Test the flow (Docker-only)
+
+Create a transaction:
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/transactions"   -H "Content-Type: application/json"   -d '{
+        "userId": "fraud-user",
+        "amount": 1234.56
+      }'
+```
+
+If everything is working:
+
+- The transactions-service will persist the transaction in PostgreSQL.
+- It will publish a TransactionCreatedEvent to Kafka (topic `transaction.created.v2`).
+- The fraud-service will consume the event and log the fraud evaluation.
+
+To stop all containers:
+
+```bash
+docker compose down
+```
 
 ---
+
+### Option 2 – Hybrid Dev Mode (Docker infra + local services with `dev` profile)
+
+This mode is convenient for development:
+
+- Docker runs only the infrastructure: PostgreSQL, Kafka, ZooKeeper.
+- The microservices run locally (via IntelliJ or Maven) with the `dev` profile.
+- Local ports use 8082 and 8083 to avoid conflicts with the Docker mapping.
+
+#### 1. Start infrastructure only
+
+From the project root:
+
+```bash
+docker compose up -d zookeeper kafka transactions-postgres
+```
+
+#### 2. Start transactions-service (dev profile)
+
+```bash
+cd transactions-service
+mvn spring-boot:run -Dspring-boot.run.profiles=dev
+```
+
+Dev profile (`transactions-service/src/main/resources/application-dev.yml`):
+
+```yaml
+server:
+  port: 8082
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5433/transactions
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+
+  kafka:
+    bootstrap-servers: localhost:9092
+```
+
+The service will be available at:
+
+- http://localhost:8082
+
+#### 3. Start fraud-service (dev profile)
+
+```bash
+cd ../fraud-service
+mvn spring-boot:run -Dspring-boot.run.profiles=dev
+```
+
+Dev profile (`fraud-service/src/main/resources/application-dev.yml`):
+
+```yaml
+server:
+  port: 8083
+
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+```
+
+The service will be available at:
+
+- http://localhost:8083
+
+#### 4. Test the flow (Hybrid mode)
+
+Create a transaction:
+
+```bash
+curl -X POST "http://localhost:8082/api/v1/transactions"   -H "Content-Type: application/json"   -d '{
+        "userId": "fraud-user",
+        "amount": 1234.56
+      }'
+```
+
+- The transactions-service will use PostgreSQL and Kafka in Docker.
+- The fraud-service (running locally) will consume the event from Kafka and log the decision.
+
+---
+
+### Notes
+
+- For local development, Option 2 (Hybrid + `dev` profile) is usually more convenient.
+- For demo / "it just works" mode, Option 1 (full Docker, 5 containers) is simpler to start with a single command.
+- For details about environment-specific configuration, see:
+  - docs/profiles-environments.md
+  - docs/kafka-docker-cheatsheet.md
 
 ## 📡 Main Endpoints
 
