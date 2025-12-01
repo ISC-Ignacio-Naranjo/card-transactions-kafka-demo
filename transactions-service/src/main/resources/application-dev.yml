@@ -1,0 +1,17 @@
+server:
+  port: 8082  # o 8080 si ya liberaste el puerto; tú decides
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5433/transactions
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+
+  kafka:
+    bootstrap-servers: localhost:9092
+
+logging:
+  level:
+    org.apache.kafka: WARN
+    org.springframework.kafka: WARN

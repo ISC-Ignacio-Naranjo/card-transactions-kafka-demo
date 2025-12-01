@@ -1,12 +1,11 @@
-server:
-  port: 8081
-
 spring:
   application:
     name: fraud-service
 
   kafka:
-    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: fraud-service
+      auto-offset-reset: earliest
 
 management:
   endpoints:

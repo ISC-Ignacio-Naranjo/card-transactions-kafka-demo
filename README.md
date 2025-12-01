@@ -232,6 +232,8 @@ Typical collaboration flow:
 ## 📚 Documentation
 
 - [Kafka & Docker Cheat Sheet](docs/kafka-docker-cheatsheet.md)
+- [Profiles & Environments](docs/profiles-environments.md)
+
 
 
 ## 🧹 Future Improvements
