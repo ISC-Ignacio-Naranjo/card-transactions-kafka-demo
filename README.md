@@ -1,79 +1,95 @@
 # Card Transactions Kafka Demo
 
-Sample project with **Java 21 + Spring Boot microservices**, asynchronous communication via **Kafka**, persistence in **PostgreSQL**, all orchestrated with **Docker Compose** and wired into **GitHub Actions** CI.  
-It also includes a real **integration test** using **Testcontainers + PostgreSQL**.
+An event-driven backend demo built with **Java 21** and **Spring Boot 4**, showing asynchronous
+communication between two microservices over **Apache Kafka 4 (KRaft mode)**, with persistence in
+**PostgreSQL** and a **Testcontainers**-backed integration test wired into **GitHub Actions** CI.
+
+This is a portfolio project focused on demonstrating microservice communication patterns,
+Kafka fundamentals, and CI/CD basics — it is **not** intended as a production-ready system.
+See [Future Improvements](#-future-improvements) for what is deliberately out of scope today.
 
 ---
 
-## 🧱 High-level Architecture
+## 🧱 Architecture
 
-Services:
-
-- **transactions-service**
-  - Exposes a REST API to create and query card transactions.
-  - Persists transactions in PostgreSQL using Spring Data JPA.
-  - Publishes a `TransactionCreated` event to Kafka whenever a transaction is created.
-
-- **fraud-service**
-  - Consumes `TransactionCreated` events from Kafka.
-  - Applies simple fraud rules (e.g. based on transaction amount).
-  - Exposes a REST API to query fraud decisions.
+| Service | Responsibilities |
+|---|---|
+| **transactions-service** | Exposes a REST API to create and query card transactions. Validates requests, persists transactions in PostgreSQL, and publishes a `TransactionCreatedEvent` to Kafka after each successful transaction. |
+| **fraud-service** | Consumes `TransactionCreatedEvent` from Kafka, applies amount-based fraud rules, and exposes a REST API to query the resulting decisions. Decisions are kept **in memory** — there is no fraud database yet. |
 
 Infrastructure (defined in `docker-compose.yml`):
 
-- **PostgreSQL** (`postgres`)
-- **Zookeeper** (`zookeeper`)
-- **Kafka** (`kafka`)
-- **transactions-service**
-- **fraud-service**
+- **PostgreSQL 16** — owned exclusively by `transactions-service`.
+- **Apache Kafka 4.0.0** — single-node broker running in **KRaft mode** (no ZooKeeper).
+
+```mermaid
+flowchart TD
+    Client(["Client"]) -->|"POST /api/v1/transactions"| TS["transactions-service"]
+    TS -->|"persist transaction"| PG[("PostgreSQL 16")]
+    TS -->|"publish TransactionCreatedEvent"| Topic{{"Kafka (KRaft)\ntopic: transaction.created.v2"}}
+    Topic -->|"consume"| FS["fraud-service"]
+    FS -->|"evaluate amount-based rules"| Mem[("In-memory decisions")]
+    Mem -->|"query"| API(["Fraud REST API"])
+```
+
+`transactions-service` and `fraud-service` do not call each other directly — they communicate only
+through the Kafka topic. The transaction's status in PostgreSQL is **not** updated with the fraud
+outcome; the two services remain independent (see [Event Flow](#-event-flow) for details and current
+limitations).
 
 ---
 
 ## 🛠️ Tech Stack
 
 - **Language:** Java 21
-- **Framework:** Spring Boot
-  - Spring Web
-  - Spring Data JPA
-  - Spring for Apache Kafka
-- **Database:** PostgreSQL
-- **Messaging:** Kafka (Confluent image)
-- **Containerization:** Docker & Docker Compose
+- **Framework:** Spring Boot 4.0.0 (Spring Web, Spring Data JPA, Spring for Apache Kafka)
+- **Messaging:** Apache Kafka 4.0.0, KRaft mode
+- **Database:** PostgreSQL 16
+- **Build tool:** Maven (each service includes the Maven Wrapper)
+- **Containerization:** Docker & Docker Compose V2
 - **Testing:** JUnit 5, AssertJ, Testcontainers
 - **CI:** GitHub Actions
 
 ---
 
-## 🚀 Running the System with Docker Compose
+## ✅ Prerequisites
 
-### Prerequisites
-## How to Run the System
+This project can be run in two ways, with different local requirements.
 
-This project can be run in two main ways:
+**Full Docker Compose** (everything runs in containers):
 
-1. Full Docker Compose (all 5 services as containers).
-2. Hybrid dev mode (infrastructure in Docker, microservices running locally with the `dev` profile).
+- Docker
+- Docker Compose V2 (`docker compose ...`, bundled with modern Docker Desktop / Docker Engine)
+
+Java and Maven are **not** required on the host in this mode — both services are built inside
+multi-stage Dockerfiles.
+
+**Hybrid / Local Development** (infrastructure in Docker, services run on the host):
+
+- Java 21 (Temurin is used in CI; any Java 21 distribution works)
+- Docker + Docker Compose V2 (to run PostgreSQL and Kafka)
+- No global Maven install needed — each service ships the **Maven Wrapper** (`./mvnw`)
 
 ---
 
-### Option 1 – Full Docker Compose (5 containers)
+## 🚀 How to Run the System
 
-In this mode everything runs in Docker: database, Kafka and both microservices.
+### Option 1 – Full Docker Compose
+
+Everything — database, Kafka and both microservices — runs in Docker.
 
 From the project root:
 
 ```bash
-cd /path/to/card-transactions-kafka-demo
-docker compose up --build
+docker compose up -d --build
 ```
 
-This will start:
+This starts:
 
-- transactions-postgres (PostgreSQL)
-- zookeeper
-- kafka
-- transactions-service (port 8080)
-- fraud-service (port 8081)
+- `postgres` (container `transactions-postgres`)
+- `kafka` (single-node, KRaft mode)
+- `transactions-service`
+- `fraud-service`
 
 Check container status:
 
@@ -81,294 +97,215 @@ Check container status:
 docker compose ps
 ```
 
-Default exposed ports (host -> container):
+Exposed ports (host → container):
 
-- localhost:5433  -> PostgreSQL (5432 inside the container)
-- localhost:9092  -> Kafka
-- localhost:8080  -> transactions-service (container port 8080)
-- localhost:8081  -> fraud-service (container port 8080)
+| Component | Host address | Notes |
+|---|---|---|
+| transactions-service | `localhost:8080` | REST API |
+| fraud-service | `localhost:8081` | REST API |
+| PostgreSQL | `localhost:5433` | maps to container port `5432` |
+| Kafka (host listener) | `localhost:9092` | for clients running on the host |
 
-#### Test the flow (Docker-only)
+Inside the Docker network, `transactions-service` and `fraud-service` reach Kafka at `kafka:29092`
+(see [Kafka Listeners](#-kafka-listeners) below).
 
-Create a transaction:
-
-```bash
-curl -X POST "http://localhost:8080/api/v1/transactions"   -H "Content-Type: application/json"   -d '{
-        "userId": "fraud-user",
-        "amount": 1234.56
-      }'
-```
-
-If everything is working:
-
-- The transactions-service will persist the transaction in PostgreSQL.
-- It will publish a TransactionCreatedEvent to Kafka (topic `transaction.created.v2`).
-- The fraud-service will consume the event and log the fraud evaluation.
-
-To stop all containers:
+Stop the stack:
 
 ```bash
 docker compose down
 ```
 
----
+### Option 2 – Hybrid Dev Mode (Docker infra + local services)
 
-### Option 2 – Hybrid Dev Mode (Docker infra + local services with `dev` profile)
+Docker runs only the infrastructure (PostgreSQL and Kafka); both microservices run on the host with
+the `dev` profile, on ports `8082` and `8083` to avoid clashing with the Docker Compose port mapping.
 
-This mode is convenient for development:
-
-- Docker runs only the infrastructure: PostgreSQL, Kafka, ZooKeeper.
-- The microservices run locally (via IntelliJ or Maven) with the `dev` profile.
-- Local ports use 8082 and 8083 to avoid conflicts with the Docker mapping.
-
-#### 1. Start infrastructure only
-
-From the project root:
+**1. Start infrastructure only**
 
 ```bash
-docker compose up -d zookeeper kafka transactions-postgres
+docker compose up -d postgres kafka
 ```
 
-#### 2. Start transactions-service (dev profile)
+**2. Start transactions-service**
 
 ```bash
 cd transactions-service
-mvn spring-boot:run -Dspring-boot.run.profiles=dev
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
-Dev profile (`transactions-service/src/main/resources/application-dev.yml`):
+Available at `http://localhost:8082`.
 
-```yaml
-server:
-  port: 8082
-
-spring:
-  datasource:
-    url: jdbc:postgresql://localhost:5433/transactions
-    username: postgres
-    password: postgres
-    driver-class-name: org.postgresql.Driver
-
-  kafka:
-    bootstrap-servers: localhost:9092
-```
-
-The service will be available at:
-
-- http://localhost:8082
-
-#### 3. Start fraud-service (dev profile)
+**3. Start fraud-service**
 
 ```bash
-cd ../fraud-service
-mvn spring-boot:run -Dspring-boot.run.profiles=dev
+cd fraud-service
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
-Dev profile (`fraud-service/src/main/resources/application-dev.yml`):
+Available at `http://localhost:8083`.
 
-```yaml
-server:
-  port: 8083
-
-spring:
-  kafka:
-    bootstrap-servers: localhost:9092
-```
-
-The service will be available at:
-
-- http://localhost:8083
-
-#### 4. Test the flow (Hybrid mode)
-
-Create a transaction:
-
-```bash
-curl -X POST "http://localhost:8082/api/v1/transactions"   -H "Content-Type: application/json"   -d '{
-        "userId": "fraud-user",
-        "amount": 1234.56
-      }'
-```
-
-- The transactions-service will use PostgreSQL and Kafka in Docker.
-- The fraud-service (running locally) will consume the event from Kafka and log the decision.
+Both services connect to the infrastructure started in step 1 via `localhost:5433` (PostgreSQL) and
+`localhost:9092` (Kafka). See [`docs/profiles-environments.md`](docs/profiles-environments.md) for
+the full profile configuration.
 
 ---
 
-### Notes
+## 🔌 Kafka Listeners
 
-- For local development, Option 2 (Hybrid + `dev` profile) is usually more convenient.
-- For demo / "it just works" mode, Option 1 (full Docker, 5 containers) is simpler to start with a single command.
-- For details about environment-specific configuration, see:
-  - docs/profiles-environments.md
-  - docs/kafka-docker-cheatsheet.md
+The Kafka broker exposes two listeners:
 
-## 📡 Main Endpoints
+- **`localhost:9092`** — for clients running on the host machine (used by the `dev` profile in
+  Hybrid mode, or by any tool run directly from your terminal).
+- **`kafka:29092`** — for clients running inside the Docker network (used by
+  `transactions-service` and `fraud-service` in Full Docker Compose mode).
 
-### 1. Create a Transaction
-
-**Service:** `transactions-service`  
-**URL:** `POST http://localhost:8080/api/v1/transactions`
-
-Example request:
-
-```bash
-curl -X POST "http://localhost:8080/api/v1/transactions"   -H "Content-Type: application/json"   -d '{
-        "userId": "fraud-user",
-        "amount": 1234.56
-      }'
-```
-
-Effects:
-
-1. The transaction is stored in PostgreSQL.
-2. A `TransactionCreated` event is published to Kafka (e.g. topic `transaction.created.v1`).
-3. `fraud-service` consumes the event and evaluates fraud rules.
+Two listeners exist because a container resolves `localhost` to itself, not to the Kafka container.
+Advertising a single address to both audiences would let one of them fail to connect. Splitting host
+and internal traffic into separate listener names keeps both connection paths correct without extra
+client-side configuration.
 
 ---
 
-### 2. List Fraud Decisions
+## 🔄 Event Flow
 
-**Service:** `fraud-service`  
-**URL:** `GET http://localhost:8081/api/v1/fraud/decisions`
+1. A client sends `POST /api/v1/transactions` with `userId` and `amount`.
+2. `transactions-service` validates the request and persists the transaction in PostgreSQL with
+   status `CREATED`.
+3. `transactions-service` publishes a `TransactionCreatedEvent` to the `transaction.created.v2`
+   Kafka topic, keyed by `userId`.
+4. `fraud-service` consumes the event.
+5. `fraud-service` evaluates the transaction amount against fixed thresholds (see
+   [Fraud Rules](#-fraud-rules)).
+6. `fraud-service` stores the resulting decision **in memory**.
+7. The decision can be queried through the fraud-service REST API.
 
-Example:
+**Current limitations** (by design, at this stage of the project):
+
+- The Kafka publish in step 3 is not wrapped in a distributed transaction with the database write —
+  it is a best-effort send, not a guaranteed or exactly-once delivery.
+- The transaction's status in PostgreSQL is never updated with the fraud outcome; the two services
+  do not talk back to each other.
+- Fraud decisions are not persisted and are lost on restart.
+
+---
+
+## 📡 API Examples
+
+### Create a Transaction
+
+**Service:** `transactions-service` · **Port:** `8080` (Docker) / `8082` (Hybrid dev)
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/transactions" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "userId": "demo-user",
+        "amount": 15000.00
+      }'
+```
+
+Other read endpoints on the same service:
+
+- `GET /api/v1/transactions/{id}`
+- `GET /api/v1/transactions/user/{userId}`
+- `GET /api/v1/transactions`
+
+### Query Fraud Decisions
+
+**Service:** `fraud-service` · **Port:** `8081` (Docker) / `8083` (Hybrid dev)
 
 ```bash
 curl "http://localhost:8081/api/v1/fraud/decisions"
 ```
 
-It should return the fraud decisions calculated based on the consumed transaction events.
+```bash
+curl "http://localhost:8081/api/v1/fraud/decisions/transaction/1"
+```
 
 ---
 
-## 🧪 Tests & Testcontainers
+## 🚨 Fraud Rules
 
-In `transactions-service` there is a **real integration test** using **Testcontainers + PostgreSQL**:
+`fraud-service` applies a fixed set of amount-based thresholds:
 
-- Class: `com.card.transactions.repository.TransactionRepositoryTest`
-- Key aspects:
-  - Annotated with `@SpringBootTest` and `@Testcontainers`.
-  - Uses `PostgreSQLContainer` to spin up a **real PostgreSQL** instance in Docker only for the test.
-  - Uses `@DynamicPropertySource` to dynamically configure:
-    - `spring.datasource.url`
-    - `spring.datasource.username`
-    - `spring.datasource.password`
+| Amount | Fraud status | Risk level |
+|---|---|---|
+| `< 10,000` | `CLEAR` | `LOW` |
+| `>= 10,000` and `< 50,000` | `REVIEW` | `MEDIUM` |
+| `>= 50,000` | `REJECTED` | `HIGH` |
 
-The test:
+---
 
-1. Builds a `TransactionEntity`.
-2. Persists it using `TransactionRepository`.
-3. Reads it back from the database.
-4. Asserts that the data is consistent.
+## 🧪 Testing & CI
 
-### Running tests locally
+**transactions-service**
 
-From the `transactions-service` module:
+- `TransactionRepositoryTest` — a real integration test using **Testcontainers**, spinning up an
+  actual PostgreSQL 16 container to verify persistence through `TransactionRepository`.
+- `TransactionsServiceApplicationTests` — currently `@Disabled`, pending a dedicated test
+  configuration for the full application context.
+
+**fraud-service**
+
+- `FraudServiceApplicationTests` — verifies the application context loads correctly.
+
+Run tests locally from either service directory:
 
 ```bash
-cd transactions-service
-mvn test
+./mvnw clean verify
 ```
 
-Notes:
+**Continuous Integration** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
 
-- `TransactionRepositoryTest` runs and uses Testcontainers.
-- The Spring Initializr-generated test `TransactionsServiceApplicationTests.contextLoads` is **disabled** via `@Disabled` to avoid bringing up the full application context with real infrastructure config until a dedicated test profile is provided.
+- Triggers on `push` and `pull_request` to `main` and `dev`.
+- Sets up JDK 21 (Temurin) with Maven dependency caching.
+- Runs `mvn -B clean verify` for both `transactions-service` and `fraud-service` — the full test
+  suite executes on every run, it is not skipped.
+- GitHub-hosted `ubuntu-latest` runners provide a Docker daemon out of the box, so the
+  Testcontainers-based test runs without any extra CI configuration.
 
-In **CI**, tests are currently skipped using `-DskipTests` to avoid dealing with Docker/Testcontainers on the GitHub runner for now.
-
----
-
-## ⚙️ Continuous Integration (GitHub Actions)
-
-The workflow file lives at:
-
-```text
-.github/workflows/ci.yml
-```
-
-The CI pipeline triggers on:
-
-- `push` to `main` and `dev`
-- `pull_request` targeting `main` or `dev`
-
-Pipeline steps:
-
-1. **Checkout** the repository.
-2. Set up **JDK 21 (Temurin)**.
-3. Build both services with Maven (skipping tests):
-
-  - `transactions-service`
-  - `fraud-service`
-
-The current goal is to ensure that both microservices **compile and package successfully** on every change.
+This test suite is intentionally small at this stage — it covers persistence and application
+context startup, not full end-to-end or Kafka-level integration coverage. Expanding it is listed
+under [Future Improvements](#-future-improvements).
 
 ---
 
 ## 🤝 Collaboration & Branching Model
 
-Branches:
+- **`main`** — protected branch, updated only via Pull Requests from `dev`; represents the stable
+  state.
+- **`dev`** — default development branch; feature work is integrated here first, then merged into
+  `main` via PR.
 
-- **`main`**
-  - Protected branch.
-  - Updated only via Pull Requests from `dev`.
-  - Represents the “stable” state.
-
-- **`dev`**
-  - Default development branch.
-  - Feature work is integrated here first.
-  - Later merged into `main` via PR.
-
-Typical collaboration flow:
-
-1. Clone the repo and switch to `dev`:
-
-   ```bash
-   git checkout dev
-   ```
-
-2. (Recommended) Create a feature branch:
-
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-3. Make changes and commit:
-
-   ```bash
-   git add .
-   git commit -m "Describe your change"
-   ```
-
-4. Push the feature branch:
-
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-5. Open a **Pull Request** on GitHub:
-  - From `feature/your-feature-name` into `dev`.
-
-6. After review and approval, merge into `dev`.  
-   Later, `dev` is merged into `main` via another PR.
+Typical flow: branch from `dev` → commit changes → open a PR back into `dev` → merge after review →
+periodically merge `dev` into `main`.
 
 ---
-## 📚 Documentation
 
-- [Kafka & Docker Cheat Sheet](docs/kafka-docker-cheatsheet.md)
-- [Profiles & Environments](docs/profiles-environments.md)
+## 📚 Further Documentation
 
+- [Kafka & Docker Cheat Sheet](docs/kafka-docker-cheatsheet.md) — CLI commands for inspecting
+  topics, consumer groups, and producing/consuming messages manually.
+- [Profiles & Environments](docs/profiles-environments.md) — how Spring profiles and
+  environment-specific configuration are structured across both services.
 
+---
 
 ## 🧹 Future Improvements
 
-Some potential next steps:
+Architectural and operational gaps identified as high-value next steps:
 
-- Add more integration tests (e.g. Kafka producer/consumer tests using `KafkaContainer`).
-- Add observability (metrics / tracing) for both services.
-- Extend fraud rules and persist fraud decisions in the database.
-- Add Kubernetes manifests (AKS-ready) to deploy both services in a cluster.
-- Enable Testcontainers-based integration tests in CI (Docker-enabled GitHub runners).
+- Kafka retry handling and a Dead Letter Topic (DLT) for poison-pill-safe consumption.
+- Consumer-side idempotency / duplicate-event protection.
+- Explicit topic provisioning (partitions, replication factor) instead of relying on broker
+  auto-creation.
+- A transactional outbox pattern to remove the dual-write between PostgreSQL and Kafka.
+- Flyway-managed database migrations, replacing `hibernate.ddl-auto: update`.
+- Persisting fraud decisions instead of keeping them in memory.
+- Broader automated test coverage (fraud-rule unit tests, controller tests, Kafka integration
+  tests).
+- Observability: metrics and distributed tracing across the Kafka boundary.
+- Kubernetes / AKS deployment manifests.
+- Configuration hardening (externalized secrets, environment-specific overrides).
 
 ---

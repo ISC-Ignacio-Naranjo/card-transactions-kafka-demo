@@ -1,6 +1,10 @@
 # Kafka & Docker Cheat Sheet for Card Transactions Demo
 
-This document summarizes the most useful Docker + Kafka commands for the **card-transactions-kafka-demo** project.
+This document summarizes the most useful Docker + Kafka commands for the
+**card-transactions-kafka-demo** project.
+
+The Kafka broker runs **`apache/kafka:4.0.0`** in **KRaft mode** (no ZooKeeper). All commands below
+target the container by its Compose service name, `kafka`.
 
 ---
 
@@ -9,12 +13,6 @@ This document summarizes the most useful Docker + Kafka commands for the **card-
 All commands assume you are in the project root, where `docker-compose.yml` lives.
 
 ### Start everything (DB + Kafka + services)
-
-```bash
-docker compose up --build
-```
-
-Detached mode (does not attach logs to your terminal):
 
 ```bash
 docker compose up -d --build
@@ -50,43 +48,41 @@ docker compose down
 
 ---
 
-## 🔍 2. Enter the Kafka Container
+## 🔍 2. Kafka CLI Tools Inside the Container
 
-First, ensure Kafka is running:
+The `apache/kafka` image ships its CLI tools under `/opt/kafka/bin/`, and that directory is **not**
+on the default `PATH`. Run each tool with its full path, either directly through
+`docker compose exec` (no shell needed):
 
 ```bash
-docker compose ps
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --list
 ```
 
-You should see `kafka` with state `Up`.
-
-Then open a shell in the Kafka container:
+or by opening a shell first and using the full path for every command:
 
 ```bash
 docker compose exec kafka bash
+/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --list
 ```
 
-Your prompt should change to something like:
-
-```bash
-root@kafka:/#
-```
-
-All `kafka-*` commands below are executed **inside** this shell.
+All examples below use `kafka:29092` — the **internal** listener. It works whether the command runs
+from inside the container's own network namespace or from any other container on the same Docker
+network. See the [Kafka Listeners](../README.md#-kafka-listeners) section in the README for why the
+broker also exposes a separate `localhost:9092` listener for host-side clients.
 
 ---
 
 ## 📡 3. List Topics
 
-Inside the Kafka container:
-
 ```bash
-kafka-topics   --bootstrap-server localhost:9092   --list
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server kafka:29092 \
+  --list
 ```
 
-You should see, among others, the topic where the transaction service publishes events, e.g.:
+You should see, among others, the topic used by this project:
 
-- `transaction.created.v1` (or the name configured in your code).
+- `transaction.created.v2`
 
 ---
 
@@ -95,17 +91,23 @@ You should see, among others, the topic where the transaction service publishes 
 To inspect topic configuration (partitions, replicas, etc.):
 
 ```bash
-kafka-topics   --bootstrap-server localhost:9092   --describe   --topic transaction.created.v1
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server kafka:29092 \
+  --describe \
+  --topic transaction.created.v2
 ```
 
 ---
 
 ## 📥 5. Consume Messages from a Topic
 
-Use this to see the actual messages your `transactions-service` is sending to Kafka.
+Use this to see the actual messages `transactions-service` sends to Kafka.
 
 ```bash
-kafka-console-consumer   --bootstrap-server localhost:9092   --topic transaction.created.v1   --from-beginning
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server kafka:29092 \
+  --topic transaction.created.v2 \
+  --from-beginning
 ```
 
 - `--from-beginning` tells Kafka to read all messages from offset 0 (full history).
@@ -113,73 +115,78 @@ kafka-console-consumer   --bootstrap-server localhost:9092   --topic transaction
 While this command is running, send a transaction from outside (e.g. with `curl`):
 
 ```bash
-curl -X POST "http://localhost:8080/api/v1/transactions"   -H "Content-Type: application/json"   -d '{
-        "userId": "fraud-user",
+curl -X POST "http://localhost:8080/api/v1/transactions" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "userId": "demo-user",
         "amount": 1234.56
       }'
 ```
 
 You should see a JSON event appear in the consumer terminal.
 
-To stop the consumer:
+To stop the consumer, press `Ctrl + C`.
 
-```text
-Ctrl + C
-```
+### Show keys as well
 
-### Show keys as well (if you use them)
+`transactions-service` publishes events keyed by `userId`:
 
 ```bash
-kafka-console-consumer   --bootstrap-server localhost:9092   --topic transaction.created.v1   --from-beginning   --property print.key=true   --property key.separator=" - "
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server kafka:29092 \
+  --topic transaction.created.v2 \
+  --from-beginning \
+  --property print.key=true \
+  --property key.separator=" - "
 ```
 
 ---
 
 ## 📤 6. Produce Messages Manually (Test fraud-service)
 
-You can send messages manually to the topic to test `fraud-service` even without calling the REST API.
-
-Inside the Kafka container:
+You can send a message directly to the topic to exercise `fraud-service` without going through the
+REST API.
 
 ```bash
-kafka-console-producer   --bootstrap-server localhost:9092   --topic transaction.created.v1
+docker compose exec kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server kafka:29092 \
+  --topic transaction.created.v2
 ```
 
-The console will wait for input. Type a JSON line and press Enter to send a message, for example:
+The console waits for input. The payload must match every field of the `TransactionCreatedEvent`
+record (`id`, `userId`, `amount`, `status`, `createdAt`) — a JSON object missing `id` will fail to
+deserialize on the consumer side. Type a JSON line and press Enter to send it:
 
 ```json
-{"userId":"manual-test","amount":999.99,"status":"CREATED","createdAt":"2025-11-30T01:23:45Z"}
+{"id":9001,"userId":"manual-test-user","amount":999.99,"status":"CREATED","createdAt":"2025-11-30T01:23:45Z"}
 ```
 
-(then press Enter)
+`fraud-service` should consume this message and log the fraud evaluation.
 
-Your `fraud-service` should consume this message and log the fraud evaluation.
-
-To stop the producer:
-
-```text
-Ctrl + C
-```
+To stop the producer, press `Ctrl + C`.
 
 ---
 
-## 🧹 7. Consumer Groups (Optional)
+## 🧹 7. Consumer Groups
 
-To inspect consumer groups (e.g. the group used by `fraud-service`):
+`fraud-service` uses the consumer group id **`fraud-service-v2`**.
 
 List all consumer groups:
 
 ```bash
-kafka-consumer-groups   --bootstrap-server localhost:9092   --list
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server kafka:29092 \
+  --list
 ```
 
-Describe a specific group (replace `fraud-service` with your actual group id):
+Describe the fraud-service group (offsets, lag, partition assignment):
 
 ```bash
-kafka-consumer-groups   --bootstrap-server localhost:9092   --describe   --group fraud-service
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server kafka:29092 \
+  --describe \
+  --group fraud-service-v2
 ```
-
-This shows offsets, lag, and partition assignments for that group.
 
 ---
 
@@ -187,13 +194,11 @@ This shows offsets, lag, and partition assignments for that group.
 
 When you are done:
 
-- Stop any running `kafka-console-consumer` or `kafka-console-producer` with `Ctrl + C`.
-- Exit the container shell with:
-
-```bash
-exit
-```
+- Stop any running console consumer/producer with `Ctrl + C`.
+- Exit the container shell (if you opened one) with `exit`.
 
 ---
 
-This cheat sheet is tailored to the **card-transactions-kafka-demo** setup, but the commands are standard Kafka CLI tools and can be reused in other projects as well.
+This cheat sheet is tailored to the **card-transactions-kafka-demo** setup and the `apache/kafka`
+image layout; the underlying commands are standard Kafka CLI tools and translate to other Kafka
+distributions with minor path adjustments.
