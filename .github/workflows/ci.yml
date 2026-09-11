@@ -21,12 +21,12 @@ jobs:
           java-version: '21'
           cache: 'maven'
 
-      - name: Build transactions-service (skip tests)
+      - name: Build and test transactions-service
         working-directory: ./transactions-service
-        run: mvn -B -DskipTests clean package
+        run: mvn -B clean verify
 
-      - name: Build fraud-service (skip tests)
+      - name: Build and test fraud-service
         working-directory: ./fraud-service
-        run: mvn -B -DskipTests clean package
+        run: mvn -B clean verify
 
 
