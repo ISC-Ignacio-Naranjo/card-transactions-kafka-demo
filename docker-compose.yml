@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16
@@ -16,28 +14,37 @@ services:
       timeout: 5s
       retries: 5
 
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.0
-    container_name: zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
-
   kafka:
-    image: confluentinc/cp-kafka:7.6.0
+    image: apache/kafka:4.0.0
     container_name: kafka
-    depends_on:
-      - zookeeper
     ports:
-      - "9092:9092"
+      - "9092:9092" # host:container - PLAINTEXT_HOST listener
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      # Single-node KRaft broker (no ZooKeeper). This node acts as both
+      # broker and controller.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+      # Three listeners:
+      # - PLAINTEXT      : internal Docker network traffic (other containers)
+      # - PLAINTEXT_HOST : host machine traffic (e.g. mvn spring-boot:run)
+      # - CONTROLLER     : KRaft controller quorum traffic
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+
+      # Single-broker cluster: replication/ISR settings must not exceed 1,
+      # otherwise internal topics (offsets, transaction state) fail to
+      # initialize.
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
 
   transactions-service:
     build:
@@ -48,13 +55,13 @@ services:
       - postgres
       - kafka
     environment:
-      # Override de propiedades Spring Boot
+      # Override Spring Boot properties for the Docker network
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/transactions
       SPRING_DATASOURCE_USERNAME: postgres
       SPRING_DATASOURCE_PASSWORD: postgres
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      # Si tienes server.port en application.yml no hace falta,
-      # pero por si acaso:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      # server.port is already set in application.yml, but set explicitly
+      # here too in case that ever changes:
       SERVER_PORT: 8080
     ports:
       - "8080:8080"
@@ -67,7 +74,7 @@ services:
     depends_on:
       - kafka
     environment:
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       SERVER_PORT: 8081
     ports:
       - "8081:8081"
